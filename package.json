@@ -1,0 +1,31 @@
+{
+  "name": "bot-max-assistant",
+  "version": "0.1.0",
+  "description": "Персональный ассистент для мессенджера Max",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "subscribe": "tsx scripts/subscribe.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@maxhub/max-bot-api": "latest",
+    "better-sqlite3": "^12.0.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "music-metadata": "^10.9.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
