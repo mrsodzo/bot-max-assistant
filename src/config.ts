@@ -50,6 +50,7 @@ export const config = {
   webhookSecret: requireEnv('WEBHOOK_SECRET'),
   port: getEnvNumber('PORT', 3000),
   dbPath: getEnv('DB_PATH', './data.db'),
+  llmModel: getEnv('LLM_MODEL', 'claude-3-5-sonnet-20241022'),
 } as const;
 
 /**
