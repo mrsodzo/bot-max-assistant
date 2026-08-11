@@ -10,7 +10,19 @@ import { initDb, closeDb } from './db.js';
  * и слушает вебхуки. При SIGINT/SIGTERM корректно завершает работу.
  */
 const maxClient = createMaxClient();
-initDb(config.dbPath); // создаём/открываем базу и прогоняем миграцию
+initDb(config.dbPath);
+
+try {
+  await maxClient.getBot().api.setMyCommands([
+    { name: 'translate', description: 'Перевести сообщение, на которое сделан reply (или просто reply с «переведи»)' },
+    { name: 'summary', description: 'Саммари обсуждения: /summary, /summary 50, /summary 24h' },
+  ]);
+  log('Команды бота зарегистрированы');
+} catch (error) {
+  const msg = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  log(`Ошибка регистрации команд бота: ${msg}`);
+}
+
 const app = createApp(maxClient);
 
 const server = app.listen(config.port, () => {

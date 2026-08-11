@@ -1,15 +1,19 @@
 import type { Request, Response } from 'express';
 import express from 'express';
-import type { Update, BotStartedUpdate, MessageCreatedUpdate } from '@maxhub/max-bot-api/types';
+import type { Update, MessageCreatedUpdate, BotStartedUpdate } from '@maxhub/max-bot-api/types';
 import { config, log } from './config.js';
 import type { MaxClient } from './maxClient.js';
+import { handleTranslate } from './handlers/translate.js';
+import { handleSummary } from './handlers/summary.js';
+import { handleVoiceMessage } from './handlers/voice.js';
+import { saveMessage } from './db.js';
 
 /**
  * Создаёт Express-приложение для обработки вебхук-запросов от Max.
  *
  * - Проверяет секретный заголовок X-Max-Bot-Api-Secret.
  * - Распознаёт Update из тела запроса.
- * - Обрабатывает update_type === 'bot_started' приветственным сообщением.
+ * - Роутит message_created по хендлерам (translate → summary → voice → save).
  * - Все ошибки внутри обработки ловятся, но бот всегда отвечает 200 OK,
  *   чтобы Max не переотправлял обновления.
  */
@@ -20,7 +24,6 @@ export function createApp(maxClient: MaxClient): express.Express {
 
   app.post('/webhook', async (req: Request, res: Response) => {
     try {
-      // Проверяем секретный заголовок до любой обработки.
       const secret = req.headers['x-max-bot-api-secret'];
       if (secret !== config.webhookSecret) {
         log('Отклонён вебхук: неверный X-Max-Bot-Api-Secret');
@@ -30,22 +33,65 @@ export function createApp(maxClient: MaxClient): express.Express {
 
       const update = req.body as Update;
       const updateType = update?.update_type ?? 'unknown';
-      const chatId = extractChatId(update);
 
-      log(`Входящий Update: type=${updateType}, chat_id=${chatId ?? 'n/a'}, timestamp=${update?.timestamp ?? 'n/a'}`);
+      log(`[IN] ${updateType} chat=${extractChatId(update) ?? 'n/a'} ts=${update?.timestamp ?? 'n/a'}`);
 
-      // Минимальная маршрутизация обновлений.
+      if (updateType === 'message_created') {
+        const message = (update as MessageCreatedUpdate).message;
+        if (!message) {
+          log('[ERR] message_created: отсутствует message в обновлении');
+          res.status(200).send();
+          return;
+        }
+
+        const chatId = message.recipient.chat_id;
+        const body = message.body;
+        const text = (body?.text ?? '').trim();
+        const hasAudio = body?.attachments?.some((a) => a.type === 'audio');
+
+        if (await handleTranslate(message)) {
+          res.status(200).send();
+          return;
+        }
+
+        if (await handleSummary(message)) {
+          res.status(200).send();
+          return;
+        }
+
+        if (hasAudio) {
+          await handleVoiceMessage(message);
+          res.status(200).send();
+          return;
+        }
+
+        if (text.length > 0 && chatId != null) {
+          const sender = message.sender;
+          const senderId = typeof sender?.user_id === 'number' ? sender.user_id : null;
+          const senderName = typeof sender?.name === 'string' ? sender.name : null;
+          saveMessage({
+            chat_id: chatId,
+            message_id: body!.mid,
+            sender_id: senderId,
+            sender_name: senderName,
+            text: text,
+            timestamp: message.timestamp ?? Date.now(),
+          });
+        }
+
+        res.status(200).send();
+        return;
+      }
+
       if (updateType === 'bot_started') {
         await handleBotStarted(maxClient, update);
       } else {
-        // Пока не реализуем обработку остальных типов — просто логируем.
-        log(`Пропущен Update типа ${updateType}: обработчик не подключен`);
+        log(`[IN] Пропущен Update типа ${updateType}: обработчик не подключен`);
       }
 
-      // Всегда отвечаем 200 OK, чтобы Max не повторял запрос.
       res.status(200).send();
     } catch (error) {
-      log(`Ошибка обработки вебхука: ${formatError(error)}`);
+      log(`[ERR] ${req.body?.update_type ?? 'unknown'} ${formatError(error)}`);
       res.status(200).send();
     }
   });
