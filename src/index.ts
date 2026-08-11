@@ -20,7 +20,8 @@ try {
   log('Команды бота зарегистрированы');
 } catch (error) {
   const msg = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-  log(`Ошибка регистрации команд бота: ${msg}`);
+  const cause = error instanceof Error && error.cause ? ` | cause: ${error.cause}` : '';
+  log(`Ошибка регистрации команд бота: ${msg}${cause}`);
 }
 
 const app = createApp(maxClient);
