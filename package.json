@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "description": "Персональный ассистент для мессенджера Max",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/src/index.js",
   "scripts": {
     "dev": "cross-env NODE_OPTIONS=--use-system-ca tsx watch src/index.ts",
     "build": "tsc",
-    "start": "cross-env NODE_OPTIONS=--use-system-ca node dist/index.js",
+    "start": "cross-env NODE_OPTIONS=--use-system-ca node dist/src/index.js",
     "subscribe": "cross-env NODE_OPTIONS=--use-system-ca tsx scripts/subscribe.ts"
   },
   "dependencies": {

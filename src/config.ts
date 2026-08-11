@@ -1,11 +1,18 @@
+import fs from 'fs';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 // Загружаем переменные окружения из .env, расположенного рядом с корнем проекта.
 const __filename = fileURLToPath(import.meta.url);
+// Ищем корень проекта: поднимаемся вверх от src/ (dev) или dist/src/ (prod)
+// до первой директории, где лежит .env.
 const __dirname = path.dirname(__filename);
-dotenv.config({ path: path.resolve(__dirname, '../.env') });
+let projectRoot = __dirname;
+while (!fs.existsSync(path.join(projectRoot, '.env')) && path.dirname(projectRoot) !== projectRoot) {
+  projectRoot = path.dirname(projectRoot);
+}
+dotenv.config({ path: path.resolve(projectRoot, '.env') });
 
 /**
  * Читает обязательную строковую переменную окружения.
