@@ -7,12 +7,16 @@ const MAX_RESPONSE_LENGTH = 4000;
 const TRUNCATE_SUFFIX_LENGTH = 3900;
 
 export async function handleTranslate(message: Message): Promise<boolean> {
+  const linkType = message.link?.type ?? 'none';
+  const trigger = (message.body.text ?? '').trim().toLowerCase();
+  log(`[DBG] handleTranslate: linkType=${linkType} trigger="${trigger}"`);
+
   if (message.link?.type !== 'reply') {
     return false;
   }
 
-  const trigger = (message.body.text ?? '').trim().toLowerCase();
   const isTranslateTrigger = trigger === 'переведи' || trigger.startsWith('/translate');
+  log(`[DBG] handleTranslate: isTranslateTrigger=${isTranslateTrigger}`);
   if (!isTranslateTrigger) {
     return false;
   }
@@ -24,13 +28,16 @@ export async function handleTranslate(message: Message): Promise<boolean> {
   }
 
   const link = message.link;
-  type LinkedMessageLike = { type: string; message?: { body?: { text?: string | null } } };
+  type LinkedMessageLike = { type: string; message?: { text?: string } };
   const linked = link as LinkedMessageLike | null | undefined;
-  const source = linked?.message?.body?.text?.trim();
+  log(`[DBG] handleTranslate: link=${JSON.stringify(linked)}`);
+  const source = linked?.message?.text?.trim();
   if (!source) {
+    log(`[DBG] handleTranslate: source is empty, sending fallback message`);
     await createMaxClient().sendMessage(chatId, 'Нет текста для перевода');
     return true;
   }
+  log(`[DBG] handleTranslate: source="${source.slice(0, 100)}"`);
 
   let translation: string;
   try {

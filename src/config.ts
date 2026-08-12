@@ -51,12 +51,15 @@ function getEnvNumber(name: string, defaultValue: number): number {
 
 export const config = {
   botToken: requireEnv('BOT_TOKEN'),
-  anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+  openaiApiKey: requireEnv('OPENAI_API_KEY'),
+  openaiBaseUrl: getEnv('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
+  openaiModel: getEnv('OPENAI_MODEL', 'gpt-4o-mini'),
+  openaiTemperature: getEnvNumber('OPENAI_TEMPERATURE', 0.7),
+  openaiMaxTokens: getEnvNumber('OPENAI_MAX_TOKENS', 2000),
   webhookUrl: requireEnv('WEBHOOK_URL'),
   webhookSecret: requireEnv('WEBHOOK_SECRET'),
   port: getEnvNumber('PORT', 3000),
   dbPath: getEnv('DB_PATH', './data.db'),
-  llmModel: getEnv('LLM_MODEL', 'claude-3-5-sonnet-20241022'),
   transcriberUrl: getEnv('TRANSCRIBER_URL', 'http://localhost:8001'),
 } as const;
 

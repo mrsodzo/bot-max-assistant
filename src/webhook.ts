@@ -48,6 +48,10 @@ export function createApp(maxClient: MaxClient): express.Express {
         const body = message.body;
         const text = (body?.text ?? '').trim();
         const hasAudio = body?.attachments?.some((a) => a.type === 'audio');
+        const linkType = message.link?.type ?? 'none';
+        const replyMid = (message.link as any)?.message?.body?.mid ?? 'none';
+
+        log(`[DBG] message: text="${text}" linkType=${linkType} replyMid=${replyMid}`);
 
         if (text.toLowerCase() === '/start') {
           await handleBotStarted(maxClient, update);
@@ -56,20 +60,25 @@ export function createApp(maxClient: MaxClient): express.Express {
         }
 
         if (await handleTranslate(message)) {
+          log('[DBG] handled by translate');
           res.status(200).send();
           return;
         }
 
         if (await handleSummary(message)) {
+          log('[DBG] handled by summary');
           res.status(200).send();
           return;
         }
 
         if (hasAudio) {
+          log('[DBG] handled by voice');
           await handleVoiceMessage(message);
           res.status(200).send();
           return;
         }
+
+        log('[DBG] no handler matched, saving to DB');
 
         if (text.length > 0 && chatId != null) {
           const sender = message.sender;

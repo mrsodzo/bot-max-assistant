@@ -1,4 +1,3 @@
-import Anthropic, { APIError } from '@anthropic-ai/sdk';
 import { config, log } from './config.js';
 
 /**
@@ -6,45 +5,10 @@ import { config, log } from './config.js';
  */
 export const SYSTEM_PROMPT = `Ты — персональный ассистент в групповом чате мессенджера Max. Твоя задача — помогать участникам чата экономить время и не терять важную информацию в потоке сообщений. Пиши на русском языке, если не указано иное. Форматируй ответы под мессенджер: короткие абзацы, умеренно эмодзи для структуры, без markdown-таблиц и сложной разметки. Не упоминай, что ты языковая модель, если не спрашивают напрямую. Уважай приватность: не сохраняй и не пересказывай личные данные (телефоны, адреса, финансовую информацию), маскируй их как [скрыто]. При неоднозначных или потенциально конфликтных ситуациях в чате — не занимай сторону, оставайся нейтральным.`;
 
-/** Максимальное число попыток внешнего вызова (Anthropic/Whisper). */
+/** Максимальное число попыток внешнего вызова (OpenAI/Whisper). */
 const MAX_ATTEMPTS = 3;
 /** Базовые задержки backoff для повторных попыток (мс): экспоненциальный рост. */
 const BACKOFF_DELAYS_MS = [500, 1000, 2000];
-
-let anthropicClient: Anthropic | null = null;
-
-/**
- * Лениво создаёт клиент Anthropic.
- * Если API-ключ отсутствует — выбрасывает понятную ошибку при первом вызове,
- * чтобы бот продолжал обрабатывать остальные сценарии.
- */
-function getAnthropic(): Anthropic {
-  if (anthropicClient) {
-    return anthropicClient;
-  }
-  if (!config.anthropicApiKey || config.anthropicApiKey.trim().length === 0) {
-    throw new Error('ANTHROPIC_API_KEY не задан: функция LLM недоступна. Установите ANTHROPIC_API_KEY в .env');
-  }
-  // maxRetries: 0 — собственный retry/backoff реализован в anthropicComplete.
-  anthropicClient = new Anthropic({ apiKey: config.anthropicApiKey, maxRetries: 0 });
-  return anthropicClient;
-}
-
-/**
- * Определяет, является ли ошибка повторимой (429 / 5xx / сетевая).
- * 4xx (кроме 429) не повторяем — это устойчивые ошибки запроса.
- */
-function isRetriableError(error: unknown): boolean {
-  // Сетевые ошибки (нет ответа) повторяемы.
-  if (error instanceof APIError && (error as APIError).status === undefined) {
-    return true;
-  }
-  if (error instanceof APIError) {
-    const status = error.status;
-    return status === 429 || (typeof status === 'number' && status >= 500);
-  }
-  return false;
-}
 
 /**
  * Sleep-обёртка для backoff.
@@ -54,83 +18,110 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Общая внутренняя функция вызова Anthropic Messages API с retry/backoff.
- *
- * При 429/5xx повторяет до MAX_ATTEMPTS с задержками BACKOFF_DELAYS_MS.
- * При 4xx (кроме 429) — пробрасывает понятную ошибку без повторных попыток.
- * Финальная ошибка пробрасывается в вызывающий хендлер.
+ * Определяет, является ли ошибка повторимой (429 / 5xx / сетевая).
  */
-async function anthropicComplete(
+function isRetriableError(error: unknown): boolean {
+  if (error instanceof TypeError) {
+    return true;
+  }
+  if (error instanceof Error) {
+    const message = error.message.toLowerCase();
+    return message.includes('429') || message.includes('too many requests') || message.includes('5xx');
+  }
+  return false;
+}
+
+/**
+ * Форматирует ошибку OpenAI-совместимого API в человекочитаемую строку.
+ */
+function formatOpenAIError(error: unknown): string {
+  if (error instanceof Error) {
+    const message = error.message;
+    const match = message.match(/HTTP (\d{3})/);
+    if (match) {
+      return `HTTP ${match[1]}: ${message.replace(match[0], '').trim() || 'ошибка запроса'}`;
+    }
+    return `${error.name}: ${message}`;
+  }
+  return String(error);
+}
+
+/**
+ * Вызывает OpenAI-совместимый Chat Completions API с retry/backoff.
+ */
+async function openaiComplete(
   systemPrompt: string,
   userPrompt: string,
   options: { maxTokens?: number } = {},
 ): Promise<string> {
-  const maxTokens = options.maxTokens ?? 1024;
-  const client = getAnthropic();
+  const maxTokens = options.maxTokens ?? config.openaiMaxTokens;
+  const url = `${config.openaiBaseUrl}/chat/completions`;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const start = Date.now();
     try {
-      const response = await client.messages.create({
-        model: config.llmModel,
-        max_tokens: maxTokens,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.openaiApiKey}`,
+        },
+        body: JSON.stringify({
+          model: config.openaiModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: config.openaiTemperature,
+          max_tokens: maxTokens,
+        }),
       });
 
       const elapsed = Date.now() - start;
-      log(`Anthropic OK: model=${config.llmModel}, attempt=${attempt}, ${elapsed}ms, stop=${response.stop_reason}`);
 
-      // Извлекаем текст из блока(ов) ответа.
-      return extractText(response);
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        const isRetriable = response.status === 429 || response.status >= 500;
+        const detail = `HTTP ${response.status}: ${errorText || response.statusText}`;
+
+        if (!isRetriable || attempt === MAX_ATTEMPTS) {
+          log(`OpenAI FAIL: attempt=${attempt}, ${elapsed}ms — ${detail}`);
+          throw new Error(`Ошибка OpenAI API: ${detail}`);
+        }
+        const backoffMs = BACKOFF_DELAYS_MS[attempt - 1] ?? BACKOFF_DELAYS_MS[BACKOFF_DELAYS_MS.length - 1];
+        log(`OpenAI RETRY: attempt=${attempt} failed (${detail}), ждём ${backoffMs}мс перед попыткой ${attempt + 1}`);
+        if (backoffMs > 0) {
+          await sleep(backoffMs);
+        }
+        continue;
+      }
+
+      const json = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+      const text = json.choices?.[0]?.message?.content?.trim() ?? '';
+
+      if (!text) {
+        log(`OpenAI FAIL: attempt=${attempt}, ${elapsed}ms — пустой ответ`);
+        throw new Error('Ошибка OpenAI API: пустой ответ');
+      }
+
+      log(`OpenAI OK: model=${config.openaiModel}, attempt=${attempt}, ${elapsed}ms, ${text.length}симв.`);
+      return text;
     } catch (error) {
       const elapsed = Date.now() - start;
       if (!isRetriableError(error) || attempt === MAX_ATTEMPTS) {
-        // Не повторяем: 4xx (кроме 429) или все попытки исчерпаны.
-        const detail = formatAnthropicError(error);
-        log(`Anthropic FAIL: attempt=${attempt}, ${elapsed}ms — ${detail}`);
-        throw new Error(`Ошибка Anthropic API: ${detail}`);
+        const detail = formatOpenAIError(error);
+        log(`OpenAI FAIL: attempt=${attempt}, ${elapsed}ms — ${detail}`);
+        throw new Error(`Ошибка OpenAI API: ${detail}`);
       }
-      // Повторяемая ошибка — ждём backoff и идём на следующую попытку.
       const backoffMs = BACKOFF_DELAYS_MS[attempt - 1] ?? BACKOFF_DELAYS_MS[BACKOFF_DELAYS_MS.length - 1];
-      const detail = formatAnthropicError(error);
-      log(`Anthropic RETRY: attempt=${attempt} failed (${detail}), ждём ${backoffMs}мс перед попыткой ${attempt + 1}`);
+      const detail = formatOpenAIError(error);
+      log(`OpenAI RETRY: attempt=${attempt} failed (${detail}), ждём ${backoffMs}мс перед попыткой ${attempt + 1}`);
       if (backoffMs > 0) {
         await sleep(backoffMs);
       }
     }
   }
-  // Теоретически недостижимо, но TS не знает о throw внутри цикла.
-  throw new Error('Ошибка Anthropic API: все попытки исчерпаны');
-}
-
-/**
- * Извлекает текстовую часть ответа Anthropic.
- * Поддерживает массив блоков ContentBlock; возвращает конкатенацию text-блоков.
- */
-function extractText(response: Anthropic.Messages.Message): string {
-  const parts: string[] = [];
-  for (const block of response.content) {
-    if (block.type === 'text' && typeof block.text === 'string') {
-      parts.push(block.text);
-    }
-  }
-  return parts.join('\n').trim();
-}
-
-/**
- * Форматирует ошибку Anthropic в человекочитаемую строку (статус + сообщение).
- */
-function formatAnthropicError(error: unknown): string {
-  if (error instanceof APIError) {
-    const status = error.status ?? 'no-status';
-    const message = error.message ?? 'неизвестная ошибка';
-    return `HTTP ${status}: ${message}`;
-  }
-  if (error instanceof Error) {
-    return `${error.name}: ${error.message}`;
-  }
-  return String(error);
+  throw new Error('Ошибка OpenAI API: все попытки исчерпаны');
 }
 
 /**
@@ -139,7 +130,7 @@ function formatAnthropicError(error: unknown): string {
  */
 export async function summarizeTranscript(transcript: string): Promise<string> {
   const userPrompt = `Сделай краткое резюме этой расшифровки голосового сообщения в 1-2 предложения на русском: ${transcript}`;
-  return anthropicComplete(SYSTEM_PROMPT, userPrompt, { maxTokens: 256 });
+  return openaiComplete(SYSTEM_PROMPT, userPrompt, { maxTokens: 256 });
 }
 
 /**
@@ -148,7 +139,7 @@ export async function summarizeTranscript(transcript: string): Promise<string> {
  */
 export async function translate(text: string): Promise<string> {
   const userPrompt = `Переведи на русский язык, сохранив тон и стиль. Если текст уже на русском — верни его с пометкой в начале. Верни только перевод без пояснений: ${text}`;
-  return anthropicComplete(SYSTEM_PROMPT, userPrompt, { maxTokens: 1024 });
+  return openaiComplete(SYSTEM_PROMPT, userPrompt, { maxTokens: 1024 });
 }
 
 /**
@@ -163,7 +154,7 @@ export async function summarizeChat(messages: { sender_name?: string | null; tex
     })
     .join('\n');
   const userPrompt = `Сделай структурированное саммари обсуждения ниже по темам. В конце отдельным блоком выдели явные договорённости/решения. Сообщения:\n${formatted}`;
-  return anthropicComplete(SYSTEM_PROMPT, userPrompt, { maxTokens: 1024 });
+  return openaiComplete(SYSTEM_PROMPT, userPrompt, { maxTokens: 1024 });
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +168,7 @@ const TRANSCRIBER_TIMEOUT_MS = 120_000;
  * Транскрибирует аудио в текст через локальный сервис GigaAM Multilingual.
  *
  * - multipart/form-data: file (Blob с filename + mimeType)
- * - Retry/backoff по тем же правилам, что и для Anthropic.
+ * - Retry/backoff по тем же правилам, что и для OpenAI.
  *
  * Финальная ошибка пробрасывается в вызывающий хендлер.
  */
