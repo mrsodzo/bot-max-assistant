@@ -167,44 +167,37 @@ export async function summarizeChat(messages: { sender_name?: string | null; tex
 }
 
 // ---------------------------------------------------------------------------
-// Whisper: транскрибация аудио в текст через OpenAI Audio API.
+// GigaAM Multilingual (Сбер): локальный сервис транскрибации через FastAPI.
 // ---------------------------------------------------------------------------
 
-const WHISPER_ENDPOINT = 'https://api.openai.com/v1/audio/transcriptions';
-const WHISPER_MODEL = 'whisper-1';
+const TRANSCRIBER_URL = config.transcriberUrl;
+const TRANSCRIBER_TIMEOUT_MS = 120_000;
 
 /**
- * Транскрибирует аудио в текст через OpenAI Whisper.
+ * Транскрибирует аудио в текст через локальный сервис GigaAM Multilingual.
  *
- * - multipart/form-data: file (Blob с filename + mimeType), model, language='ru'.
- * - Авторизация: Bearer {OPENAI_API_KEY}.
+ * - multipart/form-data: file (Blob с filename + mimeType)
  * - Retry/backoff по тем же правилам, что и для Anthropic.
  *
- * Если ключ OPENAI_API_KEY отсутствует — throw с понятным сообщением при вызове (lazy).
  * Финальная ошибка пробрасывается в вызывающий хендлер.
  */
 export async function transcribeAudio(buffer: Buffer, filename: string, mimeType: string): Promise<string> {
-  if (!config.openaiApiKey || config.openaiApiKey.trim().length === 0) {
-    throw new Error('OPENAI_API_KEY не задан: транскрибация недоступна. Установите OPENAI_API_KEY в .env');
-  }
-
   const formData = new FormData();
   formData.append('file', new Blob([new Uint8Array(buffer)], { type: mimeType }), filename);
-  formData.append('model', WHISPER_MODEL);
-  // language=ru подсказывает Whisper русскую интерпретацию — Whisper явно поддерживает это поле.
-  formData.append('language', 'ru');
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const start = Date.now();
     try {
-      const response = await fetch(WHISPER_ENDPOINT, {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), TRANSCRIBER_TIMEOUT_MS);
+
+      const response = await fetch(`${TRANSCRIBER_URL}/transcribe`, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${config.openaiApiKey}`,
-        },
         body: formData,
+        signal: controller.signal,
       });
 
+      clearTimeout(timeoutId);
       const elapsed = Date.now() - start;
 
       if (!response.ok) {
@@ -214,11 +207,11 @@ export async function transcribeAudio(buffer: Buffer, filename: string, mimeType
         const detail = `HTTP ${status}: ${errorText || response.statusText}`;
 
         if (!isRetriable || attempt === MAX_ATTEMPTS) {
-          log(`Whisper FAIL: attempt=${attempt}, ${elapsed}ms — ${detail}`);
-          throw new Error(`Ошибка Whisper API: ${detail}`);
+          log(`GigaAM FAIL: attempt=${attempt}, ${elapsed}ms — ${detail}`);
+          throw new Error(`Ошибка транскрибации: ${detail}`);
         }
         const backoffMs = BACKOFF_DELAYS_MS[attempt - 1] ?? BACKOFF_DELAYS_MS[BACKOFF_DELAYS_MS.length - 1];
-        log(`Whisper RETRY: attempt=${attempt} failed (${detail}), ждём ${backoffMs}мс перед попыткой ${attempt + 1}`);
+        log(`GigaAM RETRY: attempt=${attempt} failed (${detail}), ждём ${backoffMs}мс перед попыткой ${attempt + 1}`);
         if (backoffMs > 0) {
           await sleep(backoffMs);
         }
@@ -227,29 +220,26 @@ export async function transcribeAudio(buffer: Buffer, filename: string, mimeType
 
       const json = (await response.json()) as { text?: string };
       const text = typeof json.text === 'string' ? json.text.trim() : '';
-      log(`Whisper OK: attempt=${attempt}, ${elapsed}ms, ${text.length}симв.`);
+      log(`GigaAM OK: attempt=${attempt}, ${elapsed}ms, ${text.length}симв.`);
       return text;
     } catch (error) {
       const elapsed = Date.now() - start;
-      // Сетевые ошибки fetch (TypeError) считаем повторяемыми.
-      const isRetriable = error instanceof TypeError || isRetriableError(error);
+      const isRetriable = error instanceof TypeError || (error instanceof Error && error.name === 'AbortError');
       if (!isRetriable || attempt === MAX_ATTEMPTS) {
-        // Уже сформированная понятная ошибка — просто пробрасываем.
-        if (error instanceof Error && error.message.startsWith('Ошибка Whisper API')) {
+        if (error instanceof Error && error.message.startsWith('Ошибка транскрибации')) {
           throw error;
         }
         const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-        log(`Whisper FAIL: attempt=${attempt}, ${elapsed}ms — ${detail}`);
-        throw new Error(`Ошибка Whisper API: ${detail}`);
+        log(`GigaAM FAIL: attempt=${attempt}, ${elapsed}ms — ${detail}`);
+        throw new Error(`Ошибка транскрибации: ${detail}`);
       }
       const backoffMs = BACKOFF_DELAYS_MS[attempt - 1] ?? BACKOFF_DELAYS_MS[BACKOFF_DELAYS_MS.length - 1];
       const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      log(`Whisper RETRY: attempt=${attempt} failed (${detail}), ждём ${backoffMs}мс перед попыткой ${attempt + 1}`);
+      log(`GigaAM RETRY: attempt=${attempt} failed (${detail}), ждём ${backoffMs}мс перед попыткой ${attempt + 1}`);
       if (backoffMs > 0) {
         await sleep(backoffMs);
       }
     }
   }
-  // Теоретически недостижимо.
-  throw new Error('Ошибка Whisper API: все попытки исчерпаны');
+  throw new Error('Ошибка транскрибации: все попытки исчерпаны');
 }

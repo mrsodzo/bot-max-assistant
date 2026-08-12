@@ -52,12 +52,12 @@ function getEnvNumber(name: string, defaultValue: number): number {
 export const config = {
   botToken: requireEnv('BOT_TOKEN'),
   anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-  openaiApiKey: process.env.OPENAI_API_KEY,
   webhookUrl: requireEnv('WEBHOOK_URL'),
   webhookSecret: requireEnv('WEBHOOK_SECRET'),
   port: getEnvNumber('PORT', 3000),
   dbPath: getEnv('DB_PATH', './data.db'),
   llmModel: getEnv('LLM_MODEL', 'claude-3-5-sonnet-20241022'),
+  transcriberUrl: getEnv('TRANSCRIBER_URL', 'http://localhost:8001'),
 } as const;
 
 /**

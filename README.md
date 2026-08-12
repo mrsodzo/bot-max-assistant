@@ -4,10 +4,10 @@
 
 ## Требования
 
-- Node.js 18+ (нужен нативный `fetch`)
+- Node.js 20+ (нужен нативный `fetch`)
+- Python 3.10+ с `pip` (локальный сервис GigaAM для транскрибации)
 - Бот в Max (токен из [business.max.ru/self](https://business.max.ru/self) или мини-приложение «MAX для бизнеса»)
 - API-ключ Anthropic
-- API-ключ OpenAI (для Whisper)
 
 ## Установка
 
@@ -16,12 +16,30 @@ npm install
 cp .env.example .env
 ```
 
-Заполните `.env`:
+### Локальный сервис транскрибации (GigaAM Multilingual)
+
+Создаёт локальный HTTP-сервис на FastAPI, который скачивает модель `waveletdeboshir/gigaam-ctc` с Hugging Face при первом запуске и транскрибирует аудио.
+
+```bash
+python -m venv .venv
+.venv\\Scripts\\activate
+pip install -r services/transcriber/requirements.txt
+uvicorn services.transcriber.server:app --host 0.0.0.0 --port 8001
+```
+
+Проверьте работоспособность:
+
+```bash
+curl http://localhost:8001/health
+```
+
+## Заполните `.env`
+
 - `BOT_TOKEN`
 - `ANTHROPIC_API_KEY`
-- `OPENAI_API_KEY`
 - `WEBHOOK_URL`
 - `WEBHOOK_SECRET`
+- `TRANSCRIBER_URL=http://localhost:8001`
 - (опционально) `PORT`
 - (опционально) `DB_PATH`
 
@@ -83,6 +101,8 @@ npm run build && npm start
 
 - Лимит отправки Max: 30 rps, 2 msg/sec на чат — реализовано rate limiter'ом.
 - Лимит текста сообщения: 4000 символов — саммари разбивается на несколько.
+- Для работы транскрибации должен быть запущен локальный сервис GigaAM (`services/transcriber/server.py`).
+- Модель скачивается с Hugging Face при первом запуске сервиса (~500 МБ).
 
 ## Структура проекта
 
@@ -93,7 +113,7 @@ src/
   webhook.ts       — Express-сервер и роутинг вебхуков
   rateLimiter.ts   — глобальный и per-чат rate limiter
   db.ts            — SQLite: сохранение и выборка сообщений
-  llm.ts           — Anthropic (Claude) + OpenAI Whisper
+  llm.ts           — Anthropic (Claude) + GigaAM Multilingual
   handlers/
     voice.ts       — обработка голосовых сообщений
     translate.ts   — перевод сообщений по reply-триггеру
@@ -101,4 +121,6 @@ src/
   index.ts         — точка входа
 scripts/
   subscribe.ts     — регистрация вебхука (npm run subscribe)
+services/
+  transcriber/     — локальный сервис транскрибации на FastAPI
 ```
