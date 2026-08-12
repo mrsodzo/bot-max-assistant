@@ -14,6 +14,7 @@ initDb(config.dbPath);
 
 try {
   await maxClient.getBot().api.setMyCommands([
+    { name: 'start', description: 'Запустить бота / приветствие' },
     { name: 'translate', description: 'Перевести сообщение, на которое сделан reply (или просто reply с «переведи»)' },
     { name: 'summary', description: 'Саммари обсуждения: /summary, /summary 50, /summary 24h' },
   ]);

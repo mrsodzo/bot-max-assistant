@@ -22,7 +22,7 @@ export function createApp(maxClient: MaxClient): express.Express {
 
   app.use(express.json());
 
-  app.post('/webhook', async (req: Request, res: Response) => {
+  app.post('/', async (req: Request, res: Response) => {
     try {
       const secret = req.headers['x-max-bot-api-secret'];
       if (secret !== config.webhookSecret) {
@@ -48,6 +48,12 @@ export function createApp(maxClient: MaxClient): express.Express {
         const body = message.body;
         const text = (body?.text ?? '').trim();
         const hasAudio = body?.attachments?.some((a) => a.type === 'audio');
+
+        if (text.toLowerCase() === '/start') {
+          await handleBotStarted(maxClient, update);
+          res.status(200).send();
+          return;
+        }
 
         if (await handleTranslate(message)) {
           res.status(200).send();
@@ -125,19 +131,30 @@ function extractChatId(update: Update): number | undefined {
 }
 
 /**
- * Обрабатывает событие bot_started: отправляет приветственное сообщение.
+ * Обрабатывает событие bot_started или /start в message_created: отправляет приветственное сообщение.
  */
 async function handleBotStarted(maxClient: MaxClient, update: Update): Promise<void> {
-  if (update.update_type !== 'bot_started') {
+  let chatId: number | null | undefined;
+
+  if (update.update_type === 'bot_started') {
+    const botStarted = update as BotStartedUpdate;
+    chatId = botStarted.chat_id;
+  } else if (update.update_type === 'message_created') {
+    const messageUpdate = update as MessageCreatedUpdate;
+    const body = messageUpdate.message?.body;
+    const text = (body?.text ?? '').trim();
+    if (text.toLowerCase() === '/start') {
+      chatId = messageUpdate.message?.recipient?.chat_id;
+    }
+  }
+
+  if (chatId == null) {
     return;
   }
 
-  const botStarted = update as BotStartedUpdate;
-  const chatId = botStarted.chat_id;
-
   const greeting =
     'Привет! Я персональный ассистент в этом чате. ' +
-    'Пока я умеет: 1) отвечать на твои сообщения, 2) обрабатывать голосовые и аудио, ' +
+    'Пока я умею: 1) отвечать на твои сообщения, 2) обрабатывать голосовые и аудио, ' +
     '3) помогать с заметками и напоминаниями. Просто напиши мне!';
 
   try {
