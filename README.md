@@ -18,6 +18,7 @@
 **LLM-интеграция**
 - **OpenAI-совместимый Chat Completions API** — саммари, перевод и генерация текста (по умолчанию `gpt-4o-mini`, базовый URL и модель настраиваются); реализованы собственные retry с экспоненциальным backoff
 - **Hugging Face Inference API (serverless)** — альтернативный бекенд транскрибации для стандартных ASR-моделей (Whisper, Slidecasting, и др.); требует `HF_API_KEY`
+- **Groq Whisper API** — серверless Whisper (OpenAI-compatible `/v1/audio/transcriptions`); free tier ~10 тыс. токенов/час; требует `GROQ_API_KEY`
 - **GigaAM Multilingual (Сбер)** — локальная транскрибация (бекенд `local`)
 
 **Локальный сервис транскрибации (Python)**
@@ -77,9 +78,10 @@ curl http://localhost:8001/health
 - `WEBHOOK_SECRET`
 - (опционально) `PORT`
 - (опционально) `DB_PATH`
-- `TRANSCRIBER_BACKEND=local` (или `hf`)
+- `TRANSCRIBER_BACKEND=local` (или `hf`, `groq`)
 - (для `local`) `TRANSCRIBER_URL=http://localhost:8001`
 - (для `hf`) `HF_API_KEY` и (опционально) `HF_MODEL`
+- (для `groq`) `GROQ_API_KEY` и (опционально) `GROQ_MODEL`
 
 ### `hf` — Hugging Face Inference API (без локального сервиса)
 
@@ -92,7 +94,18 @@ HF_API_KEY=your_hf_api_key_here
 HF_MODEL=openai/whisper-base
 ```
 
-> GigaAM (`waveletdeboshir/gigaam-ctc`) не поддерживается serverless API, т..к. модель использует `trust_remote_code`. Для GigaAM используйте бекенд `local`.
+> GigaAM (`waveletdeboshir/gigaam-ctc`) не поддерживается serverless API, т.к. модель использует `trust_remote_code`. Для GigaAM используйте бекенд `local`.
+
+### `groq` — Whisper через Groq (free tier)
+
+Альтернативный serverless-вариант: транскрибация через Groq Whisper API (`whisper-large-v3`). Free tier — ~10 тыс. токенов/час (~8–12 минут аудио/час).
+
+Настройте в `.env`:
+```bash
+TRANSCRIBER_BACKEND=groq
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_MODEL=whisper-large-v3
+```
 
 ## HTTPS-туннель для локальной разработки
 

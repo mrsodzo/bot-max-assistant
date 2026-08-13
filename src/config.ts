@@ -61,13 +61,19 @@ export const config = {
   port: getEnvNumber('PORT', 3000),
   dbPath: getEnv('DB_PATH', './data.db'),
   transcriberUrl: getEnv('TRANSCRIBER_URL', 'http://localhost:8001'),
-  transcriberBackend: getEnv('TRANSCRIBER_BACKEND', 'local') as 'local' | 'hf',
+  transcriberBackend: getEnv('TRANSCRIBER_BACKEND', 'local') as 'local' | 'hf' | 'groq',
   hfApiKey: getEnv('HF_API_KEY', ''),
   hfModel: getEnv('HF_MODEL', 'openai/whisper-base'),
+  groqApiKey: getEnv('GROQ_API_KEY', ''),
+  groqModel: getEnv('GROQ_MODEL', 'whisper-large-v3'),
 } as const;
 
-if (config.transcriberBackend === 'hf' && !config.hfApiKey) {
+const backend = config.transcriberBackend;
+if (backend === 'hf' && !config.hfApiKey) {
   throw new Error('TRANSCRIBER_BACKEND=hf требует переменную HF_API_KEY');
+}
+if (backend === 'groq' && !config.groqApiKey) {
+  throw new Error('TRANSCRIBER_BACKEND=groq требует переменную GROQ_API_KEY');
 }
 
 /**

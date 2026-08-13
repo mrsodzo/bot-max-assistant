@@ -160,26 +160,24 @@ export async function summarizeChat(messages: { sender_name?: string | null; tex
 // ---------------------------------------------------------------------------
 // Транскрибация.
 //
-// Поддерживаются два бекенда, переключаемых переменной TRANSCRIBER_BACKEND:
-//  - "local" (по умолчанию): локальный сервис GigaAM Multilingual на FastAPI.
+// Поддерживаются три бекенда, переключаемых переменной TRANSCRIBER_BACKEND:
+//  - "local" (по умолчанию): локальный сервиз GigaAM Multilingual на FastAPI.
 //  - "hf": Hugging Face Inference API (serverless) — любая стандартная ASR
 //    модель (например, openai/whisper-base). Требуется HF_API_KEY.
 //    GigaAM не поддерживается serverless API (модель использует trust_remote_code).
+//  - "groq": Whisper через Groq API (OpenAI-compatible /v1/audio/transcriptions).
+//    Free tier ~10 тыс. токенов/час. Требуется GROQ_API_KEY.
 // ---------------------------------------------------------------------------
 
 const TRANSCRIBER_URL = config.transcriberUrl;
 const TRANSCRIBER_TIMEOUT_MS = 120_000;
 
-/**
- * Транскрибирует аудио в текст. Бэкенд выбирается из конфигурации:
- * - TRANSCRIBER_BACKEND=local  → локальный сервис GigaAM (multipart/form-data)
- * - TRANSCRIBER_BACKEND=hf     → Hugging Face Inference API (raw audio bytes)
- *
- * Retry/backoff: одинаково для обоих бэкендов (429 / 5xx / сетевые ошибки).
- */
 export async function transcribeAudio(buffer: Buffer, filename: string, mimeType: string): Promise<string> {
   if (config.transcriberBackend === 'hf') {
     return transcribeViaHF(buffer, mimeType);
+  }
+  if (config.transcriberBackend === 'groq') {
+    return transcribeViaGroq(buffer, filename, mimeType);
   }
   return transcribeViaLocal(buffer, filename, mimeType);
 }
@@ -222,6 +220,30 @@ function transcribeViaHF(buffer: Buffer, mimeType: string): Promise<string> {
     'HF',
     () => fetchWithTimeout(url, { method: 'POST', headers, body: buffer }, TRANSCRIBER_TIMEOUT_MS),
     (json) => (typeof json === 'string' ? json : (json as { text?: string })?.text ?? ''),
+  );
+}
+
+/**
+ * Groq Whisper API (OpenAI-compatible /v1/audio/transcriptions).
+ *
+ * Требует bearer-ключ. Аудио отправляется как multipart/form-data
+ * (file + model), как в оригинальном OpenAI Whisper API.
+ */
+function transcribeViaGroq(buffer: Buffer, filename: string, mimeType: string): Promise<string> {
+  const url = 'https://api.groq.com/v1/audio/transcriptions';
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${config.groqApiKey}`,
+  };
+
+  const formData = new FormData();
+  formData.append('file', new Blob([new Uint8Array(buffer)], { type: mimeType }), filename);
+  formData.append('model', config.groqModel ?? 'whisper-large-v3');
+  formData.append('response_format', 'json');
+
+  return requestWithRetry(
+    'Groq',
+    () => fetchWithTimeout(url, { method: 'POST', headers, body: formData }, TRANSCRIBER_TIMEOUT_MS),
+    (json) => (json as { text?: string })?.text ?? '',
   );
 }
 
