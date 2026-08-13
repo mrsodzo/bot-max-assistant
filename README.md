@@ -17,7 +17,8 @@
 
 **LLM-интеграция**
 - **OpenAI-совместимый Chat Completions API** — саммари, перевод и генерация текста (по умолчанию `gpt-4o-mini`, базовый URL и модель настраиваются); реализованы собственные retry с экспоненциальным backoff
-- **GigaAM Multilingual (Сбер)** — локальная транскрибация голосовых сообщений
+- **Hugging Face Inference API (serverless)** — альтернативный бекенд транскрибации для стандартных ASR-моделей (Whisper, Slidecasting, и др.); требует `HF_API_KEY`
+- **GigaAM Multilingual (Сбер)** — локальная транскрибация (бекенд `local`)
 
 **Локальный сервис транскрибации (Python)**
 - **FastAPI + Uvicorn** — HTTP-сервис транскрибации
@@ -35,7 +36,8 @@
 - Node.js 20+ (нужен нативный `fetch`)
 - Python 3.10+ с `pip` (локальный сервис GigaAM для транскрибации)
 - Бот в Max (токен из [business.max.ru/self](https://business.max.ru/self) или мини-приложение «MAX для бизнеса»)
-- API-ключ Anthropic
+- API-ключ OpenAI-совместимого провайдера (LLM для саммари/перевода)
+- API-ключ Hugging Face (`HF_API_KEY`, для бекенда `hf`)
 
 ## Установка
 
@@ -44,7 +46,11 @@ npm install
 cp .env.example .env
 ```
 
-### Локальный сервис транскрибации (GigaAM Multilingual)
+### Бекенды транскрибации
+
+Выбираются переменной `TRANSCRIBER_BACKEND` в `.env`:
+
+#### `local` (по умолчанию) — локальный сервис GigaAM Multilingual
 
 Создаёт локальный HTTP-сервис на FastAPI, который скачивает модель `waveletdeboshir/gigaam-ctc` с Hugging Face при первом запуске и транскрибирует аудио.
 
@@ -64,12 +70,29 @@ curl http://localhost:8001/health
 ## Заполните `.env`
 
 - `BOT_TOKEN`
-- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
+- `OPENAI_MODEL`
 - `WEBHOOK_URL`
 - `WEBHOOK_SECRET`
-- `TRANSCRIBER_URL=http://localhost:8001`
 - (опционально) `PORT`
 - (опционально) `DB_PATH`
+- `TRANSCRIBER_BACKEND=local` (или `hf`)
+- (для `local`) `TRANSCRIBER_URL=http://localhost:8001`
+- (для `hf`) `HF_API_KEY` и (опционально) `HF_MODEL`
+
+### `hf` — Hugging Face Inference API (без локального сервиса)
+
+Позволяет обойтись без Python и GPU: транскрибация выполняется через serverless Hugging Face Inference API. Подходит для любой стандартной ASR-модели (по умолчанию `openai/whisper-base`).
+
+Настройте в `.env`:
+```bash
+TRANSCRIBER_BACKEND=hf
+HF_API_KEY=your_hf_api_key_here
+HF_MODEL=openai/whisper-base
+```
+
+> GigaAM (`waveletdeboshir/gigaam-ctc`) не поддерживается serverless API, т..к. модель использует `trust_remote_code`. Для GigaAM используйте бекенд `local`.
 
 ## HTTPS-туннель для локальной разработки
 
@@ -129,8 +152,9 @@ npm run build && npm start
 
 - Лимит отправки Max: 30 rps, 2 msg/sec на чат — реализовано rate limiter'ом.
 - Лимит текста сообщения: 4000 символов — саммари разбивается на несколько.
-- Для работы транскрибации должен быть запущен локальный сервис GigaAM (`services/transcriber/server.py`).
-- Модель скачивается с Hugging Face при первом запуске сервиса (~500 МБ).
+- При бекенде `local` должен быть запущен локальный сервис GigaAM (`services/transcriber/server.py`).
+- Модель GigaAM скачивается с Hugging Face при первом запуске сервиса (~500 МБ); работает только на CPU или GPU.
+- При бекенде `hf` транскрипция идёт через Hugging Face Inference API; GigaAM не поддерживается (trust_remote_code), используйте бекенд `local` для него.
 
 ## Структура проекта
 
@@ -141,7 +165,7 @@ src/
   webhook.ts       — Express-сервер и роутинг вебхуков
   rateLimiter.ts   — глобальный и per-чат rate limiter
   db.ts            — SQLite: сохранение и выборка сообщений
-  llm.ts           — Anthropic (Claude) + GigaAM Multilingual
+  llm.ts           — OpenAI-совместимый LLM (саммари, перевод) + транскрибация (local/hf)
   handlers/
     voice.ts       — обработка голосовых сообщений
     translate.ts   — перевод сообщений по reply-триггеру

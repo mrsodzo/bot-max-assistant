@@ -61,7 +61,14 @@ export const config = {
   port: getEnvNumber('PORT', 3000),
   dbPath: getEnv('DB_PATH', './data.db'),
   transcriberUrl: getEnv('TRANSCRIBER_URL', 'http://localhost:8001'),
+  transcriberBackend: getEnv('TRANSCRIBER_BACKEND', 'local') as 'local' | 'hf',
+  hfApiKey: getEnv('HF_API_KEY', ''),
+  hfModel: getEnv('HF_MODEL', 'openai/whisper-base'),
 } as const;
+
+if (config.transcriberBackend === 'hf' && !config.hfApiKey) {
+  throw new Error('TRANSCRIBER_BACKEND=hf требует переменную HF_API_KEY');
+}
 
 /**
  * Логирует сообщение с ISO-меткой времени.

@@ -64,7 +64,7 @@ async function openaiComplete(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.openaiApiKey}`,
+          Authorization: `Bearer ${config.openaiApiKey}`,
         },
         body: JSON.stringify({
           model: config.openaiModel,
@@ -158,37 +158,89 @@ export async function summarizeChat(messages: { sender_name?: string | null; tex
 }
 
 // ---------------------------------------------------------------------------
-// GigaAM Multilingual (Сбер): локальный сервис транскрибации через FastAPI.
+// Транскрибация.
+//
+// Поддерживаются два бекенда, переключаемых переменной TRANSCRIBER_BACKEND:
+//  - "local" (по умолчанию): локальный сервис GigaAM Multilingual на FastAPI.
+//  - "hf": Hugging Face Inference API (serverless) — любая стандартная ASR
+//    модель (например, openai/whisper-base). Требуется HF_API_KEY.
+//    GigaAM не поддерживается serverless API (модель использует trust_remote_code).
 // ---------------------------------------------------------------------------
 
 const TRANSCRIBER_URL = config.transcriberUrl;
 const TRANSCRIBER_TIMEOUT_MS = 120_000;
 
 /**
- * Транскрибирует аудио в текст через локальный сервис GigaAM Multilingual.
+ * Транскрибирует аудио в текст. Бэкенд выбирается из конфигурации:
+ * - TRANSCRIBER_BACKEND=local  → локальный сервис GigaAM (multipart/form-data)
+ * - TRANSCRIBER_BACKEND=hf     → Hugging Face Inference API (raw audio bytes)
  *
- * - multipart/form-data: file (Blob с filename + mimeType)
- * - Retry/backoff по тем же правилам, что и для OpenAI.
- *
- * Финальная ошибка пробрасывается в вызывающий хендлер.
+ * Retry/backoff: одинаково для обоих бэкендов (429 / 5xx / сетевые ошибки).
  */
 export async function transcribeAudio(buffer: Buffer, filename: string, mimeType: string): Promise<string> {
+  if (config.transcriberBackend === 'hf') {
+    return transcribeViaHF(buffer, mimeType);
+  }
+  return transcribeViaLocal(buffer, filename, mimeType);
+}
+
+/**
+ * Локальный сервис GigaAM Multilingual через FastAPI (multipart/form-data).
+ */
+function transcribeViaLocal(buffer: Buffer, filename: string, mimeType: string): Promise<string> {
   const formData = new FormData();
   formData.append('file', new Blob([new Uint8Array(buffer)], { type: mimeType }), filename);
 
+  return requestWithRetry(
+    'GigaAM',
+    () =>
+      fetchWithTimeout(
+        `${TRANSCRIBER_URL}/transcribe`,
+        { method: 'POST', body: formData },
+        TRANSCRIBER_TIMEOUT_MS,
+      ),
+    (json) => (json as { text?: string })?.text ?? '',
+  );
+}
+
+/**
+ * Hugging Face Inference API (serverless) для стандартных ASR моделей.
+ *
+ * Отправляет сырые аудиобайты с Content-Type = MIME-типа файла.
+ * API возвращает либо строку (legacy), либо объект { text: string }.
+ */
+function transcribeViaHF(buffer: Buffer, mimeType: string): Promise<string> {
+  const url = `https://api-inference.huggingface.co/models/${config.hfModel}`;
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${config.hfApiKey}`,
+    Accept: 'application/json',
+    // HF Inference API принимает raw audio с указанием MIME-типа.
+    'Content-Type': mimeType.split(';')[0].trim(),
+  };
+
+  return requestWithRetry(
+    'HF',
+    () => fetchWithTimeout(url, { method: 'POST', headers, body: buffer }, TRANSCRIBER_TIMEOUT_MS),
+    (json) => (typeof json === 'string' ? json : (json as { text?: string })?.text ?? ''),
+  );
+}
+
+/**
+ * Унифицированный цикл запроса с retry + экспоненциальным backoff.
+ *
+ * - isRetriableHttp: 429 / 5xx.
+ * - isRetriableError: TypeError (сетевая ошибка) и AbortError (таймаут).
+ * resultExtractor: извлекает строку текста из JSON-ответа.
+ */
+async function requestWithRetry(
+  label: string,
+  doRequest: () => Promise<Response>,
+  resultExtractor: (json: unknown) => string,
+): Promise<string> {
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const start = Date.now();
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), TRANSCRIBER_TIMEOUT_MS);
-
-      const response = await fetch(`${TRANSCRIBER_URL}/transcribe`, {
-        method: 'POST',
-        body: formData,
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
+      const response = await doRequest();
       const elapsed = Date.now() - start;
 
       if (!response.ok) {
@@ -198,39 +250,65 @@ export async function transcribeAudio(buffer: Buffer, filename: string, mimeType
         const detail = `HTTP ${status}: ${errorText || response.statusText}`;
 
         if (!isRetriable || attempt === MAX_ATTEMPTS) {
-          log(`GigaAM FAIL: attempt=${attempt}, ${elapsed}ms — ${detail}`);
+          log(`${label} FAIL: attempt=${attempt}, ${elapsed}ms — ${detail}`);
           throw new Error(`Ошибка транскрибации: ${detail}`);
         }
         const backoffMs = BACKOFF_DELAYS_MS[attempt - 1] ?? BACKOFF_DELAYS_MS[BACKOFF_DELAYS_MS.length - 1];
-        log(`GigaAM RETRY: attempt=${attempt} failed (${detail}), ждём ${backoffMs}мс перед попыткой ${attempt + 1}`);
-        if (backoffMs > 0) {
-          await sleep(backoffMs);
-        }
+        log(`${label} RETRY: attempt=${attempt} failed (${detail}), ждём ${backoffMs}мс перед попыткой ${attempt + 1}`);
+        await sleep(backoffMs);
         continue;
       }
 
-      const json = (await response.json()) as { text?: string };
-      const text = typeof json.text === 'string' ? json.text.trim() : '';
-      log(`GigaAM OK: attempt=${attempt}, ${elapsed}ms, ${text.length}симв.`);
-      return text;
+      const body = await response.text().catch(() => '');
+      const json = safeJson(body);
+      const text = typeof json === 'string' ? json : resultExtractor(json);
+      const result = typeof text === 'string' ? text.trim() : '';
+
+      if (!result) {
+        log(`${label} FAIL: attempt=${attempt}, ${elapsed}ms — пустой ответ`);
+        throw new Error('Ошибка транскрибации: пустой ответ');
+      }
+
+      log(`${label} OK: attempt=${attempt}, ${elapsed}ms, ${result.length}симв.`);
+      return result;
     } catch (error) {
       const elapsed = Date.now() - start;
+      if (error instanceof Error && error.message.startsWith('Ошибка транскрибации') && !isRetriableError(error)) {
+        throw error;
+      }
       const isRetriable = error instanceof TypeError || (error instanceof Error && error.name === 'AbortError');
+
       if (!isRetriable || attempt === MAX_ATTEMPTS) {
-        if (error instanceof Error && error.message.startsWith('Ошибка транскрибации')) {
-          throw error;
-        }
         const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-        log(`GigaAM FAIL: attempt=${attempt}, ${elapsed}ms — ${detail}`);
+        log(`${label} FAIL: attempt=${attempt}, ${elapsed}ms — ${detail}`);
         throw new Error(`Ошибка транскрибации: ${detail}`);
       }
       const backoffMs = BACKOFF_DELAYS_MS[attempt - 1] ?? BACKOFF_DELAYS_MS[BACKOFF_DELAYS_MS.length - 1];
       const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      log(`GigaAM RETRY: attempt=${attempt} failed (${detail}), ждём ${backoffMs}мс перед попыткой ${attempt + 1}`);
-      if (backoffMs > 0) {
-        await sleep(backoffMs);
-      }
+      log(`${label} RETRY: attempt=${attempt} failed (${detail}), ждём ${backoffMs}мс перед попыткой ${attempt + 1}`);
+      await sleep(backoffMs);
     }
   }
   throw new Error('Ошибка транскрибации: все попытки исчерпаны');
+}
+
+/** Обёртка fetch с AbortController по таймауту. */
+function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return fetch(url, { ...options, signal: controller.signal } as RequestInit & { signal: AbortSignal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/** Безопасный JSON-парсер: пробует распарсить тело, иначе возвращает сырой текст. */
+function safeJson(body: string): unknown {
+  if (!body) return '';
+  try {
+    return JSON.parse(body);
+  } catch {
+    return body;
+  }
 }
