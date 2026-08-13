@@ -27,7 +27,7 @@ try {
 
 const app = createApp(maxClient);
 
-const server = app.listen(config.port, () => {
+const server = app.listen(config.port, '0.0.0.0', () => {
   log(`Listening on port ${config.port}`);
 });
 
