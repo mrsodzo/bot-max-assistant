@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "cross-env NODE_OPTIONS=--use-system-ca tsx watch src/index.ts",
     "build": "tsc",
-    "start": "cross-env NODE_OPTIONS=--use-system-ca node dist/src/index.js",
+    "start": "node --use-system-ca dist/src/index.js",
     "subscribe": "cross-env NODE_OPTIONS=--use-system-ca tsx scripts/subscribe.ts"
   },
   "dependencies": {
