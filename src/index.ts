@@ -2,6 +2,9 @@ import { config, log } from './config.js';
 import { createMaxClient } from './maxClient.js';
 import { createApp } from './webhook.js';
 import { initDb, closeDb } from './db.js';
+import { loadExtraCaCert } from './ca.js';
+
+loadExtraCaCert();
 
 /**
  * Точка входа в приложение.

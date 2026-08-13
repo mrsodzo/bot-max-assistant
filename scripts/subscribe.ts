@@ -1,6 +1,9 @@
 import { config, log } from '../src/config.js';
 import { createMaxClient } from '../src/maxClient.js';
+import { loadExtraCaCert } from '../src/ca.js';
 import type { UpdateType } from '@maxhub/max-bot-api/types';
+
+loadExtraCaCert();
 
 /**
  * Скрипт подписки вебхука.
