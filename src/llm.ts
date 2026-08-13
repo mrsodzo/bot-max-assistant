@@ -230,7 +230,7 @@ function transcribeViaHF(buffer: Buffer, mimeType: string): Promise<string> {
  * (file + model), как в оригинальном OpenAI Whisper API.
  */
 function transcribeViaGroq(buffer: Buffer, filename: string, mimeType: string): Promise<string> {
-  const url = 'https://api.groq.com/v1/audio/transcriptions';
+  const url = 'https://api.groq.com/openai/v1/audio/transcriptions';
   const headers: Record<string, string> = {
     Authorization: `Bearer ${config.groqApiKey}`,
   };
